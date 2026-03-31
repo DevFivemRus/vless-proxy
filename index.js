@@ -1,103 +1,100 @@
-const http = require('http');
-const { WebSocketServer } = require('ws');
-const net = require('net');
-const { Buffer } = require('buffer');
+const http = require("http");
+const net = require("net");
+const { WebSocketServer } = require("ws");
 
-const UUID = '277796c9-65da-43c4-a8a0-6bc79e62ed58';
+const UUID = "277796c9-65da-43c4-a8a0-6bc79e62ed58";
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer((req, res) => {
-  if (req.url === '/') {
-    res.writeHead(200);
-    res.end('OK');
-  } else if (req.url === `/sub/${UUID}`) {
-    const host = req.headers.host;
-    const config = `vless://${UUID}@${host}:443?encryption=none&security=tls&sni=${host}&type=ws&host=${host}&path=%2F#SecureVPN-Replit`;
-    res.writeHead(200, {'Content-Type': 'text/plain'});
-    res.end(config);
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === "/") { res.writeHead(200); res.end("OK"); }
+  else if (url.pathname === "/sub/" + UUID) {
+    const h = req.headers.host;
+    res.writeHead(200, {"Content-Type":"text/plain"});
+    res.end("vless://" + UUID + "@" + h + ":443?encryption=none&security=tls&sni=" + h + "&type=ws&host=" + h + "&path=%2F#SecureVPN");
   }
+  else { res.writeHead(404); res.end(); }
 });
 
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', (ws) => {
+wss.on("connection", function(ws) {
+  ws.binaryType = "arraybuffer";
   let remote = null;
-  let headerParsed = false;
+  let headerDone = false;
 
-  ws.on('message', (data) => {
-    if (!headerParsed) {
-      const parsed = parseVlessHeader(Buffer.from(data), UUID);
-      if (parsed.error) { ws.close(); return; }
-      headerParsed = true;
+  ws.on("message", function(msg) {
+    const buf = Buffer.from(msg);
 
-      const response = Buffer.from([parsed.version, 0]);
+    if (!headerDone) {
+      const p = parseHeader(buf, UUID);
+      if (p.error) { ws.close(); return; }
+      headerDone = true;
 
-      remote = net.createConnection({ host: parsed.address, port: parsed.port }, () => {
-        remote.write(parsed.data);
+      const respHeader = Buffer.from([p.version, 0]);
+      remote = net.createConnection(p.port, p.address, function() {
+        if (p.data.length > 0) remote.write(p.data);
       });
 
-      let headerSent = false;
-      remote.on('data', (chunk) => {
-        if (ws.readyState !== 1) return;
-        if (!headerSent) {
-          ws.send(Buffer.concat([response, chunk]));
-          headerSent = true;
-        } else {
-          ws.send(chunk);
-        }
+      let first = true;
+      remote.on("data", function(chunk) {
+        try {
+          if (ws.readyState !== 1) return;
+          if (first) {
+            const combined = Buffer.concat([respHeader, chunk]);
+            ws.send(combined);
+            first = false;
+          } else {
+            ws.send(chunk);
+          }
+        } catch(e) {}
       });
 
-      remote.on('error', () => ws.close());
-      remote.on('close', () => ws.close());
-    } else if (remote) {
-      remote.write(Buffer.from(data));
+      remote.on("error", function() { try { ws.close(); } catch(e) {} });
+      remote.on("end", function() { try { ws.close(); } catch(e) {} });
+      remote.on("close", function() { try { ws.close(); } catch(e) {} });
+    } else {
+      if (remote && !remote.destroyed) {
+        remote.write(buf);
+      }
     }
   });
 
-  ws.on('close', () => { if (remote) remote.destroy(); });
-  ws.on('error', () => { if (remote) remote.destroy(); });
+  ws.on("close", function() { if (remote) remote.destroy(); });
+  ws.on("error", function() { if (remote) remote.destroy(); });
 });
 
-function parseVlessHeader(buf, uuid) {
+function parseHeader(buf, uuid) {
   if (buf.length < 24) return { error: true };
   const version = buf[0];
-  const id = buf.slice(1, 17).toString('hex');
-  const expectedId = uuid.replace(/-/g, '');
-  if (id !== expectedId) return { error: true };
-  
+  const id = buf.slice(1, 17).toString("hex");
+  const expected = uuid.replace(/-/g, "");
+  if (id !== expected) return { error: true };
+
   const optLen = buf[17];
   const cmd = buf[18 + optLen];
   if (cmd !== 1 && cmd !== 2) return { error: true };
-  
-  const portIdx = 19 + optLen;
-  const port = buf.readUInt16BE(portIdx);
-  
-  let addrIdx = portIdx + 2;
-  const addrType = buf[addrIdx]; addrIdx++;
-  let address = '';
-  let addrLen = 0;
-  
-  if (addrType === 1) {
-    addrLen = 4;
-    address = `${buf[addrIdx]}.${buf[addrIdx+1]}.${buf[addrIdx+2]}.${buf[addrIdx+3]}`;
-  } else if (addrType === 2) {
-    addrLen = buf[addrIdx]; addrIdx++;
-    address = buf.slice(addrIdx, addrIdx + addrLen).toString();
-  } else if (addrType === 3) {
-    addrLen = 16;
+
+  const pi = 19 + optLen;
+  const port = buf.readUInt16BE(pi);
+  let ai = pi + 2;
+  const atype = buf[ai]; ai++;
+  let address = "", alen = 0;
+
+  if (atype === 1) {
+    alen = 4;
+    address = buf[ai] + "." + buf[ai+1] + "." + buf[ai+2] + "." + buf[ai+3];
+  } else if (atype === 2) {
+    alen = buf[ai]; ai++;
+    address = buf.slice(ai, ai + alen).toString();
+  } else if (atype === 3) {
+    alen = 16;
     const parts = [];
-    for (let i = 0; i < 16; i += 2) parts.push(buf.readUInt16BE(addrIdx + i).toString(16));
-    address = parts.join(':');
+    for (let i = 0; i < 16; i += 2) parts.push(buf.readUInt16BE(ai + i).toString(16));
+    address = parts.join(":");
   }
-  
-  return {
-    error: false, version, address, port,
-    data: buf.slice(addrIdx + addrLen),
-    isUDP: cmd === 2
-  };
+
+  return { error: false, version: version, address: address, port: port, data: buf.slice(ai + alen), isUDP: cmd === 2 };
 }
 
-server.listen(PORT, () => console.log(`VLESS proxy on port ${PORT}`));
+server.listen(PORT, function() { console.log("VLESS proxy running on port " + PORT); });
