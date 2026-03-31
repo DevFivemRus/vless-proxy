@@ -1,11 +1,12 @@
-run = "npm start"
+run = "npm install ws && node index.js"
 entrypoint = "index.js"
+modules = ["nodejs-20:v8-20230920-bd784b9"]
 
 [nix]
 channel = "stable-24_05"
 
 [deployment]
-run = ["sh", "-c", "npm start"]
+run = ["sh", "-c", "node index.js"]
 
 [[ports]]
 localPort = 3000
