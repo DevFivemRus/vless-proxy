@@ -8,7 +8,13 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping server
+      - name: Wake Replit and ping server
         run: |
-          curl -s -o /dev/null -w "%{http_code}" "https://fd3c3618-d791-4799-b48f-6afd8f6c1362-00-cyxlszjupn67.pike.replit.dev/" || true
-          echo "Pinged at $(date)"
+          # First ping to wake up Replit container
+          curl -s -o /dev/null -w "%{http_code}" --max-time 30 "https://fd3c3618-d791-4799-b48f-6afd8f6c1362-00-cyxlszjupn67.pike.replit.dev/" || true
+          sleep 10
+          # Second ping to verify server is running
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://fd3c3618-d791-4799-b48f-6afd8f6c1362-00-cyxlszjupn67.pike.replit.dev/" || echo "000")
+          echo "Server status: $STATUS at $(date)"
+          # Also ping the Replit editor to keep project alive
+          curl -s -o /dev/null --max-time 10 "https://replit.com/@securevpn42/vless-proxy-1" || true
