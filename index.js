@@ -98,3 +98,10 @@ function parseHeader(buf, uuid) {
 }
 
 server.listen(PORT, function() { console.log("VLESS proxy running on port " + PORT); });
+
+// Keep alive: ping self every 4 minutes
+setInterval(function() {
+  require("http").get("http://localhost:" + (process.env.PORT || 3000) + "/", function(r) {
+    console.log("Self-ping OK: " + r.statusCode);
+  }).on("error", function() {});
+}, 240000);
