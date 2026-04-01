@@ -16,37 +16,48 @@ const server = http.createServer((req, res) => {
   else { res.writeHead(404); res.end(); }
 });
 
-// VLESS WebSocket handler
 const wss = new WebSocketServer({ server });
+
+// Keep WebSocket connections alive with ping every 20 seconds
+setInterval(function() {
+  wss.clients.forEach(function(ws) {
+    if (ws.isAlive === false) { ws.terminate(); return; }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 20000);
+
 wss.on("connection", function(ws) {
-  let remote = null, headerDone = false;
+  ws.isAlive = true;
+  ws.on("pong", function() { ws.isAlive = true; });
+
+  var remote = null, headerDone = false;
   ws.on("message", function(msg) {
-    const buf = Buffer.from(msg);
+    var buf = Buffer.from(msg);
     if (!headerDone) {
-      const p = parseHeader(buf, UUID);
+      var p = parseHeader(buf, UUID);
       if (p.error) { ws.close(); return; }
       headerDone = true;
-      const resp = Buffer.from([p.version, 0]);
+      var resp = Buffer.from([p.version, 0]);
       remote = net.createConnection(p.port, p.address, function() { if (p.data.length > 0) remote.write(p.data); });
-      let first = true;
+      remote.setKeepAlive(true, 30000);
+      var first = true;
       remote.on("data", function(chunk) {
         try { if (ws.readyState !== 1) return; ws.send(first ? Buffer.concat([resp, chunk]) : chunk); first = false; } catch(e) {}
       });
-      remote.on("error", function() { try { ws.close(); } catch(e) {} });
-      remote.on("end", function() { try { ws.close(); } catch(e) {} });
-      remote.on("close", function() { try { ws.close(); } catch(e) {} });
+      remote.on("error", function() { try{ws.close();}catch(e){} });
+      remote.on("end", function() { try{ws.close();}catch(e){} });
+      remote.on("close", function() { try{ws.close();}catch(e){} });
     } else if (remote && !remote.destroyed) { remote.write(buf); }
   });
-  ws.on("close", function() { if (remote) remote.destroy(); });
-  ws.on("error", function() { if (remote) remote.destroy(); });
+  ws.on("close", function() { if(remote) remote.destroy(); });
+  ws.on("error", function() { if(remote) remote.destroy(); });
 });
 
-// WhatsApp CONNECT proxy - handles HTTP CONNECT method
 server.on("connect", function(req, clientSocket, head) {
   var parts = req.url.split(":");
   var host = parts[0];
   var port = parseInt(parts[1]) || 443;
-  console.log("CONNECT " + host + ":" + port);
   var serverSocket = net.createConnection(port, host, function() {
     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     if (head.length > 0) serverSocket.write(head);
@@ -58,27 +69,21 @@ server.on("connect", function(req, clientSocket, head) {
 });
 
 function parseHeader(buf, uuid) {
-  if (buf.length < 24) return { error: true };
-  var version = buf[0];
-  var id = buf.slice(1, 17).toString("hex");
-  var expected = uuid.replace(/-/g, "");
-  if (id !== expected) return { error: true };
-  var optLen = buf[17];
-  var cmd = buf[18 + optLen];
-  if (cmd !== 1 && cmd !== 2) return { error: true };
-  var pi = 19 + optLen;
-  var port = buf.readUInt16BE(pi);
-  var ai = pi + 2, atype = buf[ai]; ai++;
-  var address = "", alen = 0;
-  if (atype === 1) { alen = 4; address = buf[ai]+"."+buf[ai+1]+"."+buf[ai+2]+"."+buf[ai+3]; }
-  else if (atype === 2) { alen = buf[ai]; ai++; address = buf.slice(ai, ai+alen).toString(); }
-  else if (atype === 3) { alen = 16; var p=[]; for(var i=0;i<16;i+=2) p.push(buf.readUInt16BE(ai+i).toString(16)); address=p.join(":"); }
-  return { error: false, version: version, address: address, port: port, data: buf.slice(ai+alen), isUDP: cmd===2 };
+  if (buf.length < 24) return {error:true};
+  var version=buf[0], id=buf.slice(1,17).toString("hex"), expected=uuid.replace(/-/g,"");
+  if (id !== expected) return {error:true};
+  var optLen=buf[17], cmd=buf[18+optLen];
+  if (cmd!==1 && cmd!==2) return {error:true};
+  var pi=19+optLen, port=buf.readUInt16BE(pi), ai=pi+2, atype=buf[ai]; ai++;
+  var address="", alen=0;
+  if(atype===1){alen=4;address=buf[ai]+"."+buf[ai+1]+"."+buf[ai+2]+"."+buf[ai+3];}
+  else if(atype===2){alen=buf[ai];ai++;address=buf.slice(ai,ai+alen).toString();}
+  else if(atype===3){alen=16;var p=[];for(var i=0;i<16;i+=2)p.push(buf.readUInt16BE(ai+i).toString(16));address=p.join(":");}
+  return {error:false,version:version,address:address,port:port,data:buf.slice(ai+alen),isUDP:cmd===2};
 }
 
-// Self-ping keep alive
 setInterval(function() {
-  require("http").get("http://localhost:" + PORT + "/", function(r) {}).on("error", function() {});
+  require("http").get("http://localhost:"+PORT+"/",function(r){}).on("error",function(){});
 }, 240000);
 
 server.listen(PORT, function() { console.log("VLESS + WhatsApp proxy on port " + PORT); });
